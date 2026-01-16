@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Map + Search + Sidebar</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Mapbox GL -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+  <!-- Mapbox Geocoder plugin (used only for Address mode, without its default UI) -->
+  <link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.2/mapbox-gl-geocoder.css" rel="stylesheet" />
+
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, Arial; }
+    .layout { display: grid; grid-template-columns: 360px 1fr; height: 100%; }
+    .sidebar { border-right: 1px solid #e5e5e5; padding: 12px; overflow: auto; }
+    #map { width: 100%; height: 100%; }
+
+    .row { display: flex; gap: 8px; margin-bottom: 10px; position: relative; }
+    input, select { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 10px; }
+
+    .item { padding: 10px; border: 1px solid #eee; border-radius: 12px; margin-bottom: 8px; cursor: pointer; }
+    .item:hover { background: #fafafa; }
+    .title { font-weight: 700; margin-bottom: 4px; }
+    .meta { font-size: 12px; opacity: .75; }
+    .count { font-size: 12px; opacity: .7; margin: 6px 0 10px; }
+
+    /* Shared dropdown for search suggestions */
+    #sbResults{
+      position:absolute; top:44px; left:0; right:0;
+      background:#fff; border:1px solid #eee; border-radius:12px;
+      overflow:hidden; display:none; z-index:9999;
+      max-height:280px; overflow:auto;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="layout">
+    <div class="sidebar">
+      <div class="row">
+        <select id="searchMode">
+          <option value="places">Places (POI/brands) - Search Box API</option>
+          <option value="address">Address (street/house) - Geocoder</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <input id="sbInput" placeholder="Search a place: restaurant, school, park..." />
+        <div id="sbResults"></div>
+      </div>
+
+      <div class="row">
+        <input id="listSearch" placeholder="Search within visible properties..." />
+      </div>
+
+      <div class="count" id="count"></div>
+      <div id="list"></div>
+    </div>
+
+    <div id="map"></div>
+  </div>
+
+  <!-- Mapbox GL JS -->
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <!-- Geocoder plugin JS -->
+  <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.2/mapbox-gl-geocoder.min.js"></script>
+
+  <script src="map.js"></script>
+</body>
+</html>

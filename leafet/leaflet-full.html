@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Leaflet Custom Search + Listings</title>
+
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+
+  <style>
+    :root { --shadow: 0 10px 26px rgba(0,0,0,.18); }
+
+    body { margin: 0; font-family: system-ui, Arial; background: #f6f7f9; }
+    #map { height: 100vh; }
+
+    /* Top panel */
+    .panel {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 9999;
+      width: min(520px, calc(100vw - 24px));
+      background: white;
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      border: 1px solid rgba(0,0,0,.06);
+    }
+
+    .panelHeader {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      border-bottom: 1px solid rgba(0,0,0,.06);
+      background: #fff;
+    }
+
+    .panelHeader select,
+    .panelHeader input,
+    .panelHeader button {
+      height: 38px;
+      border-radius: 10px;
+      border: 1px solid rgba(0,0,0,.12);
+      outline: none;
+      font-size: 14px;
+    }
+
+    .panelHeader select { padding: 0 10px; background: white; }
+    .panelHeader input { flex: 1; padding: 0 12px; }
+
+    .panelHeader button {
+      padding: 0 12px;
+      background: #111;
+      color: #fff;
+      border: 0;
+      cursor: pointer;
+    }
+
+    .panelHeader button:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* Results dropdown */
+    .results {
+      max-height: 320px;
+      overflow: auto;
+      display: none;
+    }
+
+    .results.show { display: block; }
+
+    .resultItem {
+      padding: 10px 12px;
+      cursor: pointer;
+      border-bottom: 1px solid rgba(0,0,0,.06);
+      background: #fff;
+    }
+
+    .resultItem:hover { background: #f2f4f7; }
+
+    .resultTitle { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+    .resultMeta { font-size: 12px; color: #555; line-height: 1.4; }
+
+    /* Footer hints */
+    .panelFooter {
+      padding: 10px 12px;
+      font-size: 12px;
+      color: #555;
+      background: #fafafa;
+      border-top: 1px solid rgba(0,0,0,.06);
+      display: flex;
+      gap: 10px;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #eee;
+      color: #333;
+      font-size: 12px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <div class="panelHeader">
+      <!-- Search mode (like what we did in Mapbox) -->
+      <select id="searchMode" title="Search mode">
+        <option value="address" selected>Address</option>
+        <option value="city">City</option>
+        <option value="poi">POI</option>
+        <option value="any">Any</option>
+      </select>
+
+      <!-- Search input -->
+      <input id="sbInput" type="text" placeholder="Type an address / city / place..." autocomplete="off" />
+
+      <button id="btnSearch">Search</button>
+      <button id="btnClear" title="Clear">×</button>
+    </div>
+
+    <!-- Results dropdown -->
+    <div id="sbResults" class="results"></div>
+
+    <div class="panelFooter">
+      <span class="pill" id="statusPill">Ready</span>
+      <span>Click the map to add a temporary marker</span>
+    </div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    /******************************************************************
+     * 1) Map init
+     ******************************************************************/
+    const map = L.map("map").setView([41.0082, 28.9784], 12); // Istanbul default
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+
+    // Layers
+    const searchMarkerLayer = L.layerGroup().addTo(map);
+    const listingsLayer = L.layerGroup().addTo(map);
+
+    // UI elements
+    const searchModeEl = document.getElementById("searchMode");
+    const sbInput = document.getElementById("sbInput");
+    const sbResults = document.getElementById("sbResults");
+    const btnSearch = document.getElementById("btnSearch");
+    const btnClear = document.getElementById("btnClear");
+    const statusPill = document.getElementById("statusPill");
+
+    function setStatus(text) { statusPill.textContent = text; }
+
+    /******************************************************************
+     * 2) Custom Search (Nominatim - OpenStreetMap)
+     *    - Similar to MapboxGeocoder, but using the API directly
+     ******************************************************************/
+    function modeToNominatimParams(mode) {
+      // Nominatim does not have Mapbox-style "types",
+      // but we can still apply approximate narrowing if needed.
+      // Docs: https://nominatim.org/release-docs/latest/api/Search/
+      switch (mode) {
+        case "address":
+          return { addressdetails: 1 };
+        case "city":
+          return { city: 1, addressdetails: 1 };
+        case "poi":
+          return { addressdetails: 1 }; // POI is not easy to target precisely without extra filters
+        case "any":
+        default:
+          return { addressdetails: 1 };
+      }
+    }
+
+    function buildNominatimUrl(query, mode) {
+      const base = "https://nominatim.openstreetmap.org/search";
+      const params = new URLSearchParams({
+        format: "jsonv2",
+        q: query,
+        limit: "10",
+        ...modeToNominatimParams(mode)
+      });
+      return `${base}?${params.toString()}`;
+    }
+
+    function clearResults() {
+      sbResults.innerHTML = "";
+      sbResults.classList.remove("show");
+    }
+
+    function renderResults(items) {
+      sbResults.innerHTML = "";
+
+      if (!items.length) {
+        sbResults.innerHTML = `<div class="resultItem">
+          <div class="resultTitle">No results</div>
+          <div class="resultMeta">Try a different query</div>
+        </div>`;
+        sbResults.classList.add("show");
+        return;
+      }
+
+      for (const item of items) {
+        const title = item.display_name?.split(",").slice(0, 2).join(", ") || "Result";
+        const meta = item.display_name || "";
+
+        const row = document.createElement("div");
+        row.className = "resultItem";
+        row.innerHTML = `
+          <div class="resultTitle">${escapeHtml(title)}</div>
+          <div class="resultMeta">${escapeHtml(meta)}</div>
+        `;
+
+        row.addEventListener("click", () => {
+          const lat = Number(item.lat);
+          const lon = Number(item.lon);
+
+          // Fly to + marker + popup (same behavior as our Mapbox version)
+          searchMarkerLayer.clearLayers();
+          const m = L.marker([lat, lon]).addTo(searchMarkerLayer);
+          m.bindPopup(`<b>${escapeHtml(title)}</b><br/>${escapeHtml(meta)}`).openPopup();
+
+          map.flyTo([lat, lon], 15, { duration: 0.8 });
+          clearResults();
+        });
+
+        sbResults.appendChild(row);
+      }
+
+      sbResults.classList.add("show");
+    }
+
+    async function doSearch() {
+      const q = sbInput.value.trim();
+      const mode = searchModeEl.value;
+
+      if (!q) {
+        clearResults();
+        setStatus("Type something to search");
+        return;
+      }
+
+      try {
+        setStatus("Searching...");
+        btnSearch.disabled = true;
+
+        const url = buildNominatimUrl(q, mode);
+
+        // Note: Nominatim prefers a real User-Agent from a backend,
+        // but this is fine for a simple browser demo.
+        const res = await fetch(url, { headers: { "Accept": "application/json" } });
+        const data = await res.json();
+
+        renderResults(Array.isArray(data) ? data : []);
+        setStatus(`Results: ${Array.isArray(data) ? data.length : 0}`);
+      } catch (err) {
+        console.error(err);
+        setStatus("Search error");
+        sbResults.innerHTML = `<div class="resultItem">
+          <div class="resultTitle">Something went wrong</div>
+          <div class="resultMeta">Open the console for details</div>
+        </div>`;
+        sbResults.classList.add("show");
+      } finally {
+        btnSearch.disabled = false;
+      }
+    }
+
+    // UX: Enter to search, ESC to close
+    sbInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doSearch();
+      if (e.key === "Escape") clearResults();
+    });
+
+    btnSearch.addEventListener("click", doSearch);
+
+    btnClear.addEventListener("click", () => {
+      sbInput.value = "";
+      clearResults();
+      searchMarkerLayer.clearLayers();
+      setStatus("Cleared");
+      sbInput.focus();
+    });
+
+    // Close results when clicking outside
+    document.addEventListener("click", (e) => {
+      const panel = document.querySelector(".panel");
+      if (!panel.contains(e.target)) clearResults();
+    });
+
+    /******************************************************************
+     * 3) Listings data (ADD YOUR REAL ESTATE DATA HERE)
+     *
+     * You have 3 options:
+     * (A) Inline array (quick demo)
+     * (B) Local JSON file via fetch("./listings.json")
+     * (C) Backend API via fetch("/api/listings?bbox=...")
+     ******************************************************************/
+
+    // (A) Inline demo data (replace with your real data)
+    let ALL_LISTINGS = [
+      { id: 1, title: "Apartment 2+1", price: 120000, lat: 41.0121, lng: 28.9760, area: "Beyoglu" },
+      { id: 2, title: "Villa",        price: 450000, lat: 41.0350, lng: 29.0012, area: "Besiktas" },
+      { id: 3, title: "Studio",       price:  80000, lat: 40.9952, lng: 28.9401, area: "Zeytinburnu" }
+    ];
+
+    // (B) Example: load from a local JSON file (same folder as the HTML)
+    // async function loadListingsFromJson() {
+    //   const res = await fetch("./listings.json");
+    //   ALL_LISTINGS = await res.json();
+    // }
+
+    // (C) Example: load from backend using bbox (best for large projects)
+    // async function loadListingsFromApiByBbox(bbox) {
+    //   // bbox: { south, west, north, east }
+    //   const qs = new URLSearchParams({
+    //     south: bbox.south, west: bbox.west, north: bbox.north, east: bbox.east
+    //   });
+    //   const res = await fetch(`/api/listings?${qs.toString()}`);
+    //   ALL_LISTINGS = await res.json();
+    // }
+
+    function getMapBbox() {
+      const b = map.getBounds();
+      return {
+        south: b.getSouth(),
+        west: b.getWest(),
+        north: b.getNorth(),
+        east: b.getEast()
+      };
+    }
+
+    function isInsideBbox(lat, lng, bbox) {
+      return lat >= bbox.south && lat <= bbox.north && lng >= bbox.west && lng <= bbox.east;
+    }
+
+    function renderListingsOnMap(listings) {
+      listingsLayer.clearLayers();
+
+      for (const l of listings) {
+        if (typeof l.lat !== "number" || typeof l.lng !== "number") continue;
+
+        const m = L.marker([l.lat, l.lng]).addTo(listingsLayer);
+        m.bindPopup(`
+          <div style="min-width:200px">
+            <b>${escapeHtml(l.title || "Listing")}</b><br/>
+            Price: ${escapeHtml(String(l.price ?? ""))}<br/>
+            Area: ${escapeHtml(String(l.area ?? ""))}<br/>
+            <small>ID: ${escapeHtml(String(l.id ?? ""))}</small>
+          </div>
+        `);
+      }
+
+      setStatus(`Listings on map: ${listings.length}`);
+    }
+
+    // Render listings filtered by current map bounds
+    function updateListingsByViewport() {
+      const bbox = getMapBbox();
+      const visible = ALL_LISTINGS.filter(l => isInsideBbox(l.lat, l.lng, bbox));
+      renderListingsOnMap(visible);
+    }
+
+    // Update when map moves/zooms
+    map.on("moveend", () => {
+      updateListingsByViewport();
+    });
+
+    // Click to add a temporary marker (debug)
+    map.on("click", (e) => {
+      const { lat, lng } = e.latlng;
+      L.marker([lat, lng]).addTo(searchMarkerLayer)
+        .bindPopup(`Temporary marker<br/>Lat: ${lat.toFixed(6)}<br/>Lng: ${lng.toFixed(6)}`)
+        .openPopup();
+    });
+
+    /******************************************************************
+     * 4) Utilities
+     ******************************************************************/
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    /******************************************************************
+     * 5) Boot
+     ******************************************************************/
+    (async function init() {
+      setStatus("Loading...");
+      // If you want to enable JSON loading:
+      // await loadListingsFromJson();
+
+      // If you want API loading by bbox (instead of the inline ALL_LISTINGS):
+      // await loadListingsFromApiByBbox(getMapBbox());
+
+      updateListingsByViewport();
+      setStatus("Ready");
+    })();
+  </script>
+</body>
+</html>
